@@ -1,0 +1,888 @@
+---
+title: "Experiment Three Analysis"
+output: html_document
+---
+
+## Set Up
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 14)
+```
+
+```{r}
+#clear workspace
+rm(list=ls()) 
+```
+
+```{r}
+#colour blind friendly colour palette for dataviz.
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+
+```{r}
+#custom functions
+
+#get model output as latex
+mod_out <- function(model_name) {
+  # Ensure the model is of class 'lmerMod'
+  class(model_name) <- "lmerMod"
+  
+  # Generate LaTeX output with stargazer
+  stargazer(model_name,
+            out = "model_output.tex", 
+            star.cutoffs = c(0.05, 0.01, 0.001), 
+            digits = 2, 
+            no.space = TRUE, 
+            omit.stat = "LL", 
+            single.row = TRUE, 
+            align = TRUE, 
+            header = FALSE, 
+            intercept.bottom = FALSE)
+}
+
+#output summary stats as latex
+sum_tbl <- function(combined_data) {
+  summary_table <- combined_data %>%
+    group_by(Condition) %>%
+    summarise(
+      Mean_PP = mean(PP.RESID, na.rm = TRUE),
+      SD_PP = sd(PP.RESID, na.rm = TRUE),
+      Mean_VP = mean(VP.RESID, na.rm = TRUE),
+      SD_VP = sd(VP.RESID, na.rm = TRUE),
+      Mean_SPILL = mean(SPILL.RESID, na.rm = TRUE),
+      SD_SPILL = sd(SPILL.RESID, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
+    kable(format = "latex", booktabs = TRUE,
+          col.names = c("Condition", "Mean (ms)", "SD (ms)", 
+                        "Mean (ms)", "SD (ms)", 
+                        "Mean (ms)", "SD (ms)")) %>%
+    kable_styling(latex_options = c("striped", "hold_position")) %>%
+    add_header_above(c(" " = 1, "PP Region" = 2, "VP Region" = 2, "SPILL Region" = 2))
+  
+  cat(summary_table)
+}
+```
+
+
+```{r, message=FALSE}
+#load packages - nb: not all packages used
+library(tidyverse)      #for tidying and wrangling
+library(lme4)           #for LMM building
+library(lmerTest)       #for better output from LMMs
+library(emmeans)        #for our planned comparisons
+library(performance)    #check model assumptions
+library(buildmer)       #assists with iterating through covariates and ixns
+library(ggpubr)         #plotting
+library(texreg)         #for LaTeX table output
+library(kableExtra)     #table formatting
+library(xtable)         #table outputs
+library(stargazer)      #lmm output
+library(grid)           #multiple plots
+library(patchwork)      #for plotting
+library(stringr)        #string manipulation
+library(scales)         #aesthetics
+library(ggthemes)       #aesthetics
+library(fitdistrplus)   #to check distribution
+library(car)            #for vif() function
+library(Hmisc)          #for rcorr() function
+```
+
+```{r}
+#control scientific notation - makes reading p-values easier
+options("scipen"=100000, "digits"=10)
+#increase no. of calcs for emmeans functions
+emm_options(pbkrtest.limit = 10000,
+            lmerTest.limit = 10000)
+```
+
+```{r, message=FALSE}
+#load in pre-tidied and wrangled dataset
+exp3_tidied <- read_csv("exp3_tidied.csv")
+```
+
+## Wrangling
+
+```{r}
+#factorising
+exp3_tidied <- exp3_tidied %>%
+  mutate(Participant = factor(Participant),
+         RestrictorType = factor(RestrictorType), 
+         RestrictorPosition = factor(RestrictorPosition), 
+         StimID = factor(StimID))
+```
+
+```{r}
+#deviation coding factors
+contrasts(exp3_tidied$RestrictorType) <- matrix(c(.5, -.5))
+contrasts(exp3_tidied$RestrictorPosition) <- matrix(c(.5, -.5))
+```
+
+## Descriptives & dataviz for RTs for each chunk
+
+```{r, message=FALSE, warning=FALSE}
+#pull out chunk names
+roi_columns <- grep("^C\\d+\\.RT.RESID$|^SPILL\\.RT.RESID$", names(exp3_tidied), value = TRUE)
+
+chunks_data <- exp3_tidied %>%
+  pivot_longer(cols = all_of(roi_columns), 
+               names_to = "Chunk", 
+               values_to = "ReadingTime") %>%
+  group_by(Condition, Chunk) %>%
+  summarise(
+    mean_RT = mean(ReadingTime),
+    sd_RT = sd(ReadingTime),
+    se_RT = sd_RT / sqrt(n())
+  ) %>%
+  separate(Condition, into = c("RestrictorPosition", "RestrictorType"), remove = FALSE) %>%
+  mutate(ChunkLabel = case_when(
+    RestrictorPosition == "EXT" & Chunk == "C1.RT.RESID" ~ "EVERY",
+    RestrictorPosition == "EXT" & Chunk == "C2.RT.RESID" ~ "NP",
+    RestrictorPosition == "EXT" & Chunk == "C3.RT.RESID" ~ "VP",
+    RestrictorPosition == "EXT" & Chunk == "C4.RT.RESID" ~ "PP",
+    RestrictorPosition == "EXT" & Chunk == "SPILL.RESID.RESID" ~ "SPILL",
+    RestrictorPosition == "INT" & Chunk == "C1.RT.RESID" ~ "EVERY",
+    RestrictorPosition == "INT" & Chunk == "C2.RT.RESID" ~ "NP",
+    RestrictorPosition == "INT" & Chunk == "C3.RT.RESID" ~ "PP",
+    RestrictorPosition == "INT" & Chunk == "C4.RT.RESID" ~ "VP",
+    RestrictorPosition == "INT" & Chunk == "SPILL.RESID.RESID" ~ "SPILL",
+    TRUE ~ Chunk  # Default case, if no specific condition
+  ))
+```
+
+```{r}
+#plots
+ext_chunks_plot <- chunks_data %>%
+  filter(RestrictorPosition == "EXT") %>%
+  ggplot(aes(x = Chunk, y = mean_RT, group = RestrictorType, color = RestrictorType)) +
+  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = RestrictorType), 
+              fill = "grey", alpha = 0.2, linetype = "blank") +
+  geom_line(aes(linetype = RestrictorType), linewidth = 1) +  
+  geom_point(aes(shape = RestrictorType), size = 3) +  
+  scale_y_continuous(name = "Mean Reading Time (ms.)") +
+  theme_light(base_size = 20, base_family = "Helvetica") +
+  scale_colour_manual(values = cbPalette) +  
+  facet_grid(vars(RestrictorPosition), switch = "y") +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black")) +
+  scale_x_discrete(labels = c("EVERY", "NP", "VP", "PP", "SPILL"))
+
+int_chunks_plot <- chunks_data %>%
+  filter(RestrictorPosition == "INT") %>%
+  ggplot(aes(x = Chunk, y = mean_RT, group = RestrictorType, color = RestrictorType)) +
+  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = RestrictorType), 
+              fill = "grey", alpha = 0.2, linetype = "blank") +
+  geom_line(aes(linetype = RestrictorType), linewidth = 1) +  
+  geom_point(aes(shape = RestrictorType), size = 3) +  
+  scale_y_continuous(name = "Mean Reading Time (ms.)") +
+  theme_light(base_size = 20, base_family = "Helvetica") +
+  scale_colour_manual(values = cbPalette) +  
+  facet_grid(vars(RestrictorPosition), switch = "y") +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black")) +
+  scale_x_discrete(labels = c("EVERY", "NP", "PP", "VP", "SPILL"))
+```
+
+```{r}
+#combine plots
+pdf("charts/EXP3_ext_int_chunks_plot.pdf", width = 14, height = 14)
+ext_chunks_plot + 
+  int_chunks_plot + 
+  plot_layout(ncol = 1,
+              guides = "collect",
+              axis_titles = "collect") +
+  plot_annotation(title = "Mean Chunk Reading Times (ms.)",
+                  theme = theme(plot.title = element_text(hjust = 0.5,
+                                                          size = 30)))
+```
+
+```{r}
+#output summary stats
+sum_tbl(exp3_tidied)
+```
+
+## Reading Time Analysis for Preposition Phrase
+
+```{r}
+#dataviz for condition - logged for better viz.
+pdf("charts/EXP3_pp_plot.pdf", width = 14, height = 14)
+pp_viz <- exp3_tidied %>%
+  ggplot(aes(x = RestrictorType, #group by condition on x axis
+             y = PP.RESID.LOG, #log RTs on y axis
+             fill = RestrictorType)) + #colour by condition
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  geom_violin(trim = FALSE) + #violin, don't trim ends
+  geom_boxplot(width = 0.3, #boxplot
+               outlier.shape = NA) + #don't show outlier dots
+  scale_fill_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "PP Reading Times (ms.)",
+       y = "Logged Residual Reading Time (ms.)",
+       x = NULL) +
+  facet_wrap(~RestrictorPosition) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        plot.title = element_text(hjust = 0.5, size = 30), #center title, title font size
+        legend.position = "bottom") + #legend at bottom
+  coord_flip() + #flip coordinates so it's horizontal
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black"))
+pp_viz
+```
+
+### Modelling
+
+```{r, results=FALSE, message=FALSE}
+#building a buildmer model
+pp.blmr1 <- buildmer(PP.RESID ~ RestrictorType * RestrictorPosition +
+                       (1 + RestrictorType * RestrictorPosition | Participant) +
+                       (1 + RestrictorType * RestrictorPosition | StimID),
+                     buildmerControl = buildmerControl(include = 
+                                                         ~ RestrictorType * RestrictorPosition), #inc. ixn.
+                     data = exp3_tidied)
+```
+
+```{r}
+#model summary
+summary(pp.blmr1)
+```
+
+```{r}
+#pp.blmr1 manual model
+pp.mod1 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition +
+                  (1 + RestrictorType + RestrictorPosition | Participant),
+                data = exp3_tidied)
+summary(pp.mod1) #OK, main fx of RestrictorType and RestrictorPosition
+```
+
+
+```{r}
+#increase ranfx
+pp.mod2 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition + 
+                  (1 + RestrictorType + RestrictorPosition | Participant) +
+                  (1 | StimID),
+                data = exp3_tidied)
+summary(pp.mod2) #convergence issue
+```
+
+```{r}
+#add covars
+pp.mod3 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition + TrialN +
+                  (1 + RestrictorType + RestrictorPosition | Participant),
+                data = exp3_tidied)
+summary(pp.mod3) #OK, main fx of RestrictorType and RestrictorPosition
+```
+
+```{r}
+#compare - covar mod is better
+anova(pp.mod1, pp.mod3) %>% xtable() #latex
+```
+
+```{r}
+#check model
+check_model(pp.mod3) #OK
+```
+
+```{r}
+#summary
+mod_out(pp.mod3)
+```
+
+```{r}
+#checking that EXT conditions are slower than INT conditions overall
+pp_emms_pos <- emmeans(pp.mod3,
+                       pairwise ~ RestrictorPosition,
+                       adjust = "none") #only one comparison made
+#print
+pp_emms_pos
+```
+
+```{r}
+#looking to see whether OTH > SUB overall
+pp_emms_type <- emmeans(pp.mod3,
+                       pairwise ~ RestrictorType,
+                       adjust = "none") #only one comparison made
+#print
+pp_emms_type
+```
+
+```{r}
+#emms
+pp_emms_simple <- emmeans(pp.mod3, ~ RestrictorType * RestrictorPosition,
+                   adjust = "none") #we'll adjust when doing contrasts
+```
+
+```{r}
+#contrasts
+pp_contrasts_simple <- contrast(pp_emms_simple,
+                 adjust = "bonferroni",
+                 "pairwise", 
+                 simple = "RestrictorType")
+#print
+pp_contrasts_simple %>%
+  xtable()
+```
+
+```{r}
+#plot it
+pdf("charts/EXP3_pp_emms_ixn_plot.pdf", width = 14, height = 14)
+pp_emms_ixn_plot <- emmip(pp.mod3, 
+                            RestrictorType ~ RestrictorPosition,
+                           CIs = TRUE,
+                           CIarg = list(lwd = .5,
+                                        alpha = 1)) +
+  scale_colour_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "PP EMM Reading Times Interaction Plot",
+       y = "Estimated Marginal Mean Reading Time (ms.)",
+       x = "RestrictorPosition") + #set up labels/title
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  theme(plot.title = element_text(size = 30, #title font size
+                                hjust = 0.5), #center title
+      legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+      legend.position = "bottom") #legend at bottom
+#print chart
+pp_emms_ixn_plot
+```
+
+```{r}
+#look at trials - may be that there's an interaction with TrialN here
+pdf("charts/EXP3_pp_trials_plot.pdf", width = 14, height = 14)
+pp_trials_viz <- exp3_tidied %>%
+  ggplot(aes(x = TrialN, y = PP.RESID, color = RestrictorType, linetype = RestrictorType)) +
+  geom_smooth(method = "loess", se = TRUE) +  # Smooth trend without assuming a linear model
+  labs(x = "Trial Number", y = "Raw Reading Time",
+       title = "PP Reading Time by Trial x Condition") +
+  theme_light(base_size = 25) +
+  theme(plot.title = element_text(size = 30, hjust = 0.5),
+        legend.background = element_rect(color = "black", linewidth = 1),
+        legend.position = "bottom") +
+  facet_grid(~RestrictorPosition) +
+  scale_colour_manual(values = cbPalette)
+pp_trials_viz
+```
+
+```{r}
+#ixn model
+pp.mod4 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition * TrialN +
+                  (1 + RestrictorType + RestrictorPosition | Participant),
+                data = exp3_tidied)
+summary(pp.mod4) #OK, main fx of RestrictorType and RestrictorPosition
+```
+
+```{r}
+#check model
+check_model(pp.mod4)
+```
+
+```{r}
+#model output
+mod_out(pp.mod4)
+```
+
+```{r}
+#checking that EXT conditions are slower than INT conditions overall
+pp_emms_pos.TRIALS <- emmeans(pp.mod4,
+                       pairwise ~ RestrictorPosition,
+                       adjust = "none") #only one comparison made
+#print
+pp_emms_pos.TRIALS
+```
+
+```{r}
+#looking to see whether OTH > SUB overall
+pp_emms_type.TRIALS <- emmeans(pp.mod4,
+                       pairwise ~ RestrictorType,
+                       adjust = "none") #only one comparison made
+#print
+pp_emms_type.TRIALS
+```
+
+```{r}
+#emms
+pp_emms_simple.TRIALS <- emmeans(pp.mod4, ~ RestrictorType * RestrictorPosition,
+                   adjust = "none") #we'll adjust when doing contrasts
+```
+
+```{r}
+#contrasts
+pp_contrasts_simple.TRIALS <- contrast(pp_emms_simple.TRIALS,
+                 adjust = "tukey",
+                 "pairwise", 
+                 simple = "RestrictorType")
+#print
+pp_contrasts_simple.TRIALS %>%
+  xtable()
+```
+
+```{r}
+#generate sequence of trials
+trial_seq <- seq(min(exp3_tidied$TrialN), max(exp3_tidied$TrialN), length.out = 100)
+
+#predict RTs for levels of TrialN given ixn
+predicted_data <- emmeans(pp.mod4, ~ RestrictorType * RestrictorPosition * TrialN, 
+                          at = list(TrialN = trial_seq), type = "response")
+
+#convert to df for dataviz
+pred_df <- as.data.frame(predicted_data)
+```
+
+
+```{r}
+#plot predicted RTs over trials - the adaptation rate is different; EXT-OTH gets easier so there's an ixn, but it's mediated by TrialN
+pdf("charts/EXP3_pp_trials_pred_plot.pdf", width = 14, height = 14)
+pp_trials_pred_viz <- pred_df %>%
+  ggplot(aes(x = TrialN, y = emmean, color = RestrictorType, linetype = RestrictorType)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = emmean - SE, ymax = emmean + SE, fill = RestrictorType), alpha = 0.2) +
+  scale_colour_manual(values = cbPalette) +
+  scale_fill_manual(values = cbPalette) +
+  labs(title = "Model-Predicted PP Reading Time Over Trials",
+       y = "Predicted Reading Time (ms)",
+       x = "Trial Number") +
+  facet_grid(~RestrictorPosition) +
+  theme_light(base_size = 25) +
+  theme(plot.title = element_text(size = 30, hjust = 0.5),
+        legend.background = element_rect(color = "black", linewidth = 1),
+        legend.position = "bottom")
+pp_trials_pred_viz
+```
+
+## Reading Time Analysis for Verb Phrase
+
+```{r}
+#dataviz for condition - logged for better viz.
+pdf("charts/EXP3_vp_plot.pdf", height = 14, width = 14)
+vp_viz <- exp3_tidied %>%
+  ggplot(aes(x = RestrictorType, #group by condition on x axis
+             y = VP.RESID.LOG, #log RTs on y axis
+             fill = RestrictorType)) + #colour by condition
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  geom_violin(trim = FALSE) + #violin, don't trim ends
+  geom_boxplot(width = 0.3, #boxplot
+               outlier.shape = NA) + #don't show outlier dots
+  scale_fill_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "VP Reading Times (ms.)",
+       y = "Logged Residual Reading Time (ms.)",
+       x = NULL) +
+  facet_wrap(~RestrictorPosition) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        plot.title = element_text(hjust = 0.5, size = 30), #center title, title font size
+        legend.position = "bottom") + #legend at bottom
+  coord_flip() + #flip coordinates so it's horizontal
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black"))
+vp_viz
+```
+
+### Modelling
+
+```{r, results=FALSE, message=FALSE}
+#building a buildmer model first
+vp.blmr1 <- buildmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                       (1 + RestrictorType * RestrictorPosition | Participant) +
+                       (1 + RestrictorType * RestrictorPosition | StimID),
+                     buildmerControl = buildmerControl(include = 
+                                                         ~ RestrictorType * RestrictorPosition), #inc. ixn.
+                     data = exp3_tidied)
+```
+
+```{r}
+#model summary
+summary(vp.blmr1)
+```
+
+```{r}
+#buildmer manual
+vp.mod1 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                  (1 + RestrictorPosition | Participant),
+                data = exp3_tidied)
+summary(vp.mod1) #OK, ixn. and pos fx
+```
+
+```{r}
+#increase ranfx complexity
+vp.mod2 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                  (1 + RestrictorPosition | Participant) +
+                  (1 | StimID),
+                data = exp3_tidied)
+summary(vp.mod2) #OK, same effects
+```
+
+```{r}
+#compare models - no diff.
+anova(vp.mod1, vp.mod2) #%>% xtable() #latex
+```
+
+```{r}
+#hard to increase ranfx complexity further - build maximal model then knockdown
+vp.mod3 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                  (1 + RestrictorType * RestrictorPosition | Participant) +
+                  (1 + RestrictorType * RestrictorPosition | StimID),
+                data = exp3_tidied)
+summary(vp.mod3) #singular fit
+```
+
+```{r}
+#drop RestrictorPosition from StimID intercept
+vp.mod4 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                  (1 + RestrictorType * RestrictorPosition | Participant) +
+                  (1 + RestrictorType | StimID),
+                data = exp3_tidied)
+summary(vp.mod4) #singular fit
+```
+
+```{r}
+#drop RestrictorType from Participant intercept
+vp.mod5 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                  (1 + RestrictorPosition | Participant) +
+                  (1 + RestrictorType | StimID),
+                data = exp3_tidied)
+summary(vp.mod5) #singular fit
+```
+
+```{r}
+#drop RestrictorType from StimID intercept - back to first mod
+vp.mod6 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                  (1 + RestrictorPosition | Participant) +
+                  (1 | StimID),
+                data = exp3_tidied)
+summary(vp.mod6) #OK, RestrictorPosition and ixn. effects
+```
+
+```{r}
+#check model
+check_model(vp.mod6) #OK
+```
+
+```{r}
+#compare - no diff.
+anova(vp.mod1, vp.mod6) #%>% xtable() #latex
+```
+
+```{r}
+#add covar
+vp.mod7 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
+                  TrialN +
+                  (1 + RestrictorPosition | Participant) +
+                  (1 | StimID),
+                data = exp3_tidied)
+summary(vp.mod7) #ok, same fx
+```
+
+```{r}
+#compare - covar mod better
+anova(vp.mod6, vp.mod7) #%>% xtable() #latex
+```
+
+```{r}
+#check
+check_model(vp.mod7) #OK
+```
+
+```{r}
+mod_out(vp.mod7)
+```
+
+```{r}
+#emms
+vp_emms <- emmeans(vp.mod7, ~ RestrictorType * RestrictorPosition,
+                   adjust = "none") #we'll adjust when doing contrasts
+vp_emms
+```
+
+```{r}
+#contrasts
+contrast(vp_emms,
+         adjust = "tukey",
+         "pairwise") %>%
+  xtable()
+```
+
+```{r}
+#plot it
+pdf("charts/EXP3_vp_ixn_plot.pdf", height = 14, width = 14)
+vp_ixn_plot <- emmip(vp.mod7,
+                     RestrictorType ~ RestrictorPosition,
+                     CIs = TRUE,
+                     CIarg = list(lwd = .5,
+                                  alpha = 1)) +
+  scale_colour_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "VP EMM Reading Times Interaction Plot",
+       y = "Estimated Marginal Mean Reading Time (ms.)",
+       x = "RestrictorPosition") + #set up labels/title
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  theme(plot.title = element_text(size = 30, #title font size
+                                  hjust = 0.5), #center title
+        legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        legend.position = "bottom") #legend at bottom
+#print chart
+vp_ixn_plot
+```
+
+## Look at SPILL Region
+
+```{r}
+#dataviz for condition - logged for better viz.
+pdf("charts/EXP3_spill_plot.pdf", height = 14, width = 14)
+spill_viz <- exp3_tidied %>%
+  ggplot(aes(x = RestrictorType, #group by condition on x axis
+             y = SPILL.RESID.LOG, #log RTs on y axis
+             fill = RestrictorType)) + #colour by condition
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  geom_violin(trim = FALSE) + #violin, don't trim ends
+  geom_boxplot(width = 0.3, #boxplot
+               outlier.shape = NA) + #don't show outlier dots
+  scale_fill_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "SPILL Reading Times (ms.)",
+       y = "Logged Reading Time (ms.)",
+       x = NULL) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        plot.title = element_text(hjust = 0.5, size = 30), #center title, title font size
+        legend.position = "bottom") + #legend at bottom
+  coord_flip() + #flip coordinates so it's horizontal
+  facet_wrap(~RestrictorPosition) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black"))
+#print chart
+spill_viz
+```
+
+```{r}
+spill.blmr1 <- buildmer(SPILL.RESID ~ RestrictorType * RestrictorPosition +
+                          (1 + RestrictorType * RestrictorPosition | Participant) +
+                          (1 + RestrictorType * RestrictorPosition | StimID),
+                        buildmerControl = buildmerControl(include = ~RestrictorType*RestrictorPosition),
+                        data = exp3_tidied)
+```
+
+```{r}
+summary(spill.blmr1)
+```
+
+```{r}
+#manual model
+spill.mod1 <- lmer(SPILL.RESID ~ RestrictorType * RestrictorPosition +
+                     (1 | Participant),
+                   data = exp3_tidied)
+summary(spill.mod1) #ok, no fx
+```
+
+```{r}
+#increase ranfx
+spill.mod2 <- lmer(SPILL.RESID ~ RestrictorType * RestrictorPosition +
+                     (1 | Participant) +
+                     (1 | StimID),
+                   data = exp3_tidied)
+summary(spill.mod2) #ok, no fx
+```
+
+```{r}
+#add covars to spill.mod2
+spill.mod3 <- lmer(SPILL.RESID ~ RestrictorType * RestrictorPosition +
+                     TrialN +
+                     (1 | Participant) +
+                     (1 | StimID),
+                   data = exp3_tidied)
+summary(spill.mod3) #ok, no fx
+```
+
+```{r}
+#model output
+mod_out(spill.mod3)
+```
+
+```{r}
+#spill emms
+spill_emms <- emmeans(spill.mod3, pairwise ~ RestrictorType * RestrictorPosition, 
+                      adjust = "none")
+spill_emms
+```
+
+```{r}
+#contrasts
+spill_contrasts <- contrast(spill_emms, 
+                            "pairwise",
+                            adjust = "tukey")
+spill_contrasts %>%
+  xtable()
+```
+
+```{r}
+#data frame of emms for dataviz
+spill_emms_df <- as.data.frame(spill_emms$emmeans) %>%
+  arrange(emmean)
+```
+
+```{r}
+#plot it
+pdf("charts/EXP3_spill_ixn_plot.pdf", height = 14, width = 14)
+spill_ixn_plot <- ggplot(spill_emms_df,
+                           aes(x = fct_reorder(RestrictorType, emmean), y = emmean,
+                               colour = RestrictorType)) +
+  facet_grid(~RestrictorPosition) +
+  geom_point(size = 4) + #plot EMMs
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2) + #error bars
+  scale_colour_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "SPILL EMM Reading Times Plot",
+       y = "Estimated Marginal Mean Reading Time (ms.)",
+       x = "Restrictor Type") + #set up labels/title
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  theme(plot.title = element_text(size = 30, #title font size
+                                hjust = 0.5), #center title
+      legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+      legend.position = "bottom") #legend at bottom
+#print
+spill_ixn_plot
+```
+
+## Dataviz Showing Adjusted Means For ROIs
+
+```{r}
+#extract emms
+vp_tbl <- tibble(as.data.frame(vp_emms))
+pp_tbl <- tibble(as.data.frame(pp_emms_simple.TRIALS))
+spill_tbl <- tibble(as.data.frame(spill_emms_df))
+```
+
+
+```{r}
+#dataviz showing raw mean RTs for quant and N regions
+#and EMMs for PP, VP and SPILL regions
+
+#list all emm_list objects
+all_emms <- list(
+  pp_tbl %>% #PP emms from modelling
+    mutate(Chunk = case_when(RestrictorPosition == "INT" ~ "C3.RT.RESID",
+                             RestrictorPosition == "EXT" ~ "C4.RT.RESID")),
+  vp_tbl %>% #VP emms from modelling
+    mutate(Chunk = case_when(RestrictorPosition == "INT" ~ "C4.RT.RESID",
+                             RestrictorPosition == "EXT" ~ "C3.RT.RESID")),
+  spill_tbl %>% #SPILL emms from modelling
+    mutate(Chunk = "SPILL.RT.RESID")) %>%
+  map_dfr(as_tibble) %>% #create tibble from list
+  rename(mean_RT = emmean, #match names of mean and SE in chunks_data
+         se_RT = SE) %>%
+  mutate(Condition = str_c(RestrictorPosition, "-", RestrictorType)) %>%
+  mutate(mean_Type = "EMM") #add mean_Type column for reference
+  
+  
+#extract raw means for quant and noun from chunks_data
+raw_means <- chunks_data %>% 
+  filter(Chunk %in% c("C1.RT.RESID", "C2.RT.RESID")) %>% #filter chunks of interest
+  mutate(mean_Type = "RAW") #add mean_Type column for reference
+
+#bind to produce tibble
+chunks_data_adjusted <- bind_rows(raw_means, all_emms) %>%
+  mutate(ChunkLabel = case_when(
+    RestrictorPosition == "EXT" & Chunk == "C1.RT.RESID" ~ "EVERY",
+    RestrictorPosition == "EXT" & Chunk == "C2.RT.RESID" ~ "NP",
+    RestrictorPosition == "EXT" & Chunk == "C3.RT.RESID" ~ "VP",
+    RestrictorPosition == "EXT" & Chunk == "C4.RT.RESID" ~ "PP",
+    RestrictorPosition == "EXT" & Chunk == "SPILL.RT.RESID" ~ "SPILL",
+    RestrictorPosition == "INT" & Chunk == "C1.RT.RESID" ~ "EVERY",
+    RestrictorPosition == "INT" & Chunk == "C2.RT.RESID" ~ "NP",
+    RestrictorPosition == "INT" & Chunk == "C3.RT.RESID" ~ "PP",
+    RestrictorPosition == "INT" & Chunk == "C4.RT.RESID" ~ "VP",
+    Chunk == "SPILL.RT.RESID" ~ "SPILL",
+    TRUE ~ Chunk  # Default case, if no specific condition
+  ))
+
+```
+
+```{r}
+#plots
+ext_chunks_plot_adj <- chunks_data_adjusted %>%
+  mutate(RestrictorPosition = replace_na(RestrictorPosition, "EXT")) %>%
+  filter(RestrictorPosition == "EXT") %>%
+  ggplot(aes(x = Chunk, y = mean_RT, group = RestrictorType, color = RestrictorType)) +
+  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = RestrictorType), 
+              fill = "grey", alpha = 0.2, linetype = "blank") +
+  geom_line(aes(linetype = RestrictorType), linewidth = 1) +  
+  geom_point(aes(shape = RestrictorType), size = 3) +  
+  scale_y_continuous(name = "Mean Reading Time (ms.)") +
+  theme_light(base_size = 20, base_family = "Helvetica") +
+  scale_colour_manual(values = cbPalette) +  
+  facet_grid(vars(RestrictorPosition), switch = "y") +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black")) +
+  scale_x_discrete(labels = c("EVERY", "NP", "VP", "PP", "SPILL"))
+
+int_chunks_plot_adj <- chunks_data_adjusted %>%
+  mutate(RestrictorPosition = replace_na(RestrictorPosition, "INT")) %>%
+  filter(RestrictorPosition == "INT") %>%
+  ggplot(aes(x = Chunk, y = mean_RT, group = RestrictorType, color = RestrictorType)) +
+  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = RestrictorType), 
+              fill = "grey", alpha = 0.2, linetype = "blank") +
+  geom_line(aes(linetype = RestrictorType), linewidth = 1) +  
+  geom_point(aes(shape = RestrictorType), size = 3) +  
+  scale_y_continuous(name = "Mean Reading Time (ms.)") +
+  theme_light(base_size = 20, base_family = "Helvetica") +
+  scale_colour_manual(values = cbPalette) +  
+  facet_grid(vars(RestrictorPosition), switch = "y") +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black")) +
+  scale_x_discrete(labels = c("EVERY", "NP", "PP", "VP", "SPILL"))
+```
+
+```{r}
+#combine plots
+pdf("charts/EXP3_ext_int_chunks_adj_plot.pdf", width = 14, height = 14)
+ext_chunks_plot_adj + 
+  int_chunks_plot_adj + 
+  plot_layout(ncol = 1,
+              guides = "collect",
+              axis_titles = "collect") +
+  plot_annotation(title = "Adjusted Reading Times (ms.)",
+                  theme = theme(plot.title = element_text(hjust = 0.5,
+                                                          size = 30)))
+```
+
+
+```{r}
+percept.lm1 <- lm(PP.RESID ~ LOOK_SEEM + TrialN,
+                  data = exp3_tidied)
+summary(percept.lm1) #nothing
+```
+
+```{r}
+percept.lm2 <- lm(VP.RESID ~ LOOK_SEEM + TrialN,
+                  data = exp3_tidied)
+summary(percept.lm2) #nothing
+```
+
+```{r}
+percept.lm3 <- lm(SPILL.RESID ~ LOOK_SEEM + TrialN,
+                  data = exp3_tidied)
+summary(percept.lm3) #nothing
+```
