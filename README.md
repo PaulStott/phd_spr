@@ -1,1 +1,1 @@
-# phd_spr
+This repo contains experimental data and analysis scripts for the four self-paced reading (SPR) experiments that were conducted as part of my PhD work on Contextual Quantifier Domain Restriction (CDR).
