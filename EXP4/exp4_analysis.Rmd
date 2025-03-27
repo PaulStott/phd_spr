@@ -1,0 +1,869 @@
+---
+title: "Experiment Four Analysis"
+output: html_document
+---
+
+## Set Up
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 14)
+```
+
+```{r}
+#clear workspace
+rm(list=ls()) 
+```
+
+```{r}
+#colour blind friendly colour palette for dataviz.
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+
+```{r}
+#custom functions
+
+#get model output as latex
+mod_out <- function(model_name) {
+  # Ensure the model is of class 'lmerMod'
+  class(model_name) <- "lmerMod"
+  
+  # Generate LaTeX output with stargazer
+  stargazer(model_name,
+            out = "model_output.tex", 
+            star.cutoffs = c(0.05, 0.01, 0.001), 
+            digits = 2, 
+            no.space = TRUE, 
+            omit.stat = "LL", 
+            single.row = TRUE, 
+            align = TRUE, 
+            header = FALSE, 
+            intercept.bottom = FALSE)
+}
+
+#output summary stats as latex
+sum_tbl <- function(exp4_tidied) {
+  summary_table <- exp4_tidied %>%
+    group_by(Condition) %>%
+    summarise(
+      Mean_ExcP = mean(EXC.RESID, na.rm = TRUE),
+      SD_ExcP = sd(EXC.RESID, na.rm = TRUE),
+      Mean_VP = mean(VP.RESID, na.rm = TRUE),
+      SD_VP = sd(VP.RESID, na.rm = TRUE),
+      Mean_SPILL = mean(SPILL.RESID, na.rm = TRUE),
+      SD_SPILL = sd(SPILL.RESID, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
+    kable(format = "latex", booktabs = TRUE,
+          col.names = c("Condition", "Mean (ms)", "SD (ms)", 
+                        "Mean (ms)", "SD (ms)", 
+                        "Mean (ms)", "SD (ms)")) %>%
+    kable_styling(latex_options = c("striped", "hold_position")) %>%
+    add_header_above(c(" " = 1, "PP Region" = 2, "VP Region" = 2, "SPILL Region" = 2))
+  
+  cat(summary_table)
+}
+```
+
+
+```{r, message=FALSE}
+#load packages - nb: not all packages used
+library(tidyverse)      #for tidying and wrangling
+library(lme4)           #for LMM building
+library(lmerTest)       #for better output from LMMs
+library(emmeans)        #for our planned comparisons
+library(performance)    #check model assumptions
+library(buildmer)       #assists with iterating through covariates and ixns
+library(ggpubr)         #plotting
+library(texreg)         #for LaTeX table output
+library(kableExtra)     #table formatting
+library(xtable)         #table outputs
+library(stargazer)      #lmm output
+library(grid)           #multiple plots
+library(patchwork)      #for plotting
+library(stringr)        #string manipulation
+library(scales)         #aesthetics
+library(ggthemes)       #aesthetics
+library(fitdistrplus)   #to check distribution
+library(car)            #for vif() function
+library(Hmisc)          #for rcorr() function
+```
+
+```{r}
+#control scientific notation - makes reading p-values easier
+options("scipen"=100000, "digits"=10)
+#increase no. of calcs for emmeans functions
+emm_options(pbkrtest.limit = 10000,
+            lmerTest.limit = 10000)
+```
+
+```{r, message=FALSE}
+#load in pre-tidied and wrangled dataset
+exp4_tidied <- read_csv("exp4_tidied.csv")
+```
+
+## Wrangling
+
+```{r}
+#factorising
+exp4_tidied <- exp4_tidied %>%
+  mutate(Participant = factor(Participant),
+         ExceptiveType = factor(ExceptiveType),
+         ExceptivePosition = factor(ExceptivePosition),
+         StimID = factor(StimID))
+```
+
+```{r}
+#deviation coding factors
+contrasts(exp4_tidied$ExceptiveType) <- matrix(c(.5, -.5))
+contrasts(exp4_tidied$ExceptivePosition) <- matrix(c(-.5, .5))
+```
+
+## Descriptives & dataviz for RTs for each chunk
+
+```{r}
+#output summary stats
+sum_tbl(exp4_tidied)
+```
+
+```{r}
+#someone's probably taken a phone call at the end of a trial - remove!
+exp4_tidied %>%
+  filter(SPILL.RESID > 50000)
+```
+
+```{r}
+#someone's probably taken a phone call at the end of a trial - remove!
+exp4_tidied <- exp4_tidied %>%
+  filter(!SPILL.RESID > 50000)
+```
+
+```{r}
+#output summary stats - better
+sum_tbl(exp4_tidied)
+```
+
+```{r, message=FALSE, warning=FALSE}
+#pull out chunk names
+roi_columns <- grep("^C\\d+\\.RT.RESID$|^SPILL\\.RT.RESID$", names(exp4_tidied), value = TRUE)
+
+chunks_data <- exp4_tidied %>%
+  pivot_longer(cols = all_of(roi_columns), 
+               names_to = "Chunk", 
+               values_to = "ReadingTime") %>%
+  group_by(Condition, Chunk) %>%
+  summarise(
+    mean_RT = mean(ReadingTime),
+    sd_RT = sd(ReadingTime),
+    se_RT = sd_RT / sqrt(n())
+  ) %>%
+  separate(Condition, into = c("ExceptivePosition", "ExceptiveType")) %>%
+  mutate(ChunkLabel = case_when(
+    ExceptivePosition == "PST" & Chunk == "C1.RT.RESID" ~ "EVERY",
+    ExceptivePosition == "PST" & Chunk == "C2.RT.RESID" ~ "NP",
+    ExceptivePosition == "PST" & Chunk == "C3.RT.RESID" ~ "VP",
+    ExceptivePosition == "PST" & Chunk == "C4.RT.RESID" ~ "ExcP",
+    ExceptivePosition == "PST" & Chunk == "SPILL.RT.RESID" ~ "SPILL",
+    ExceptivePosition == "PRE" & Chunk == "C1.RT.RESID" ~ "EVERY",
+    ExceptivePosition == "PRE" & Chunk == "C2.RT.RESID" ~ "NP",
+    ExceptivePosition == "PRE" & Chunk == "C3.RT.RESID" ~ "ExcPP",
+    ExceptivePosition == "PRE" & Chunk == "C4.RT.RESID" ~ "VP",
+    ExceptivePosition == "PRE" & Chunk == "SPILL.RT.RESID" ~ "SPILL",
+    TRUE ~ Chunk  # Default case, if no specific condition
+  ))
+
+```
+
+```{r}
+#plots
+ext_chunks_plot <- chunks_data %>%
+  filter(ExceptivePosition == "PST") %>%
+  ggplot(aes(x = Chunk, y = mean_RT, group = ExceptiveType, color = ExceptiveType)) +
+  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = ExceptiveType), 
+              fill = "grey", alpha = 0.2, linetype = "blank") +
+  geom_line(aes(linetype = ExceptiveType), linewidth = 1) +  
+  geom_point(aes(shape = ExceptiveType), size = 3) +  
+  scale_y_continuous(name = "Mean Reading Time (ms.)") +
+  theme_light(base_size = 20, base_family = "Helvetica") +
+  scale_colour_manual(values = cbPalette) +  
+  facet_grid(vars(ExceptivePosition), switch = "y") +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black")) +
+  scale_x_discrete(labels = c("EVERY", "NP", "VP", "ExcP", "SPILL"))
+
+int_chunks_plot <- chunks_data %>%
+  filter(ExceptivePosition == "PRE") %>%
+  ggplot(aes(x = Chunk, y = mean_RT, group = ExceptiveType, color = ExceptiveType)) +
+  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = ExceptiveType), 
+              fill = "grey", alpha = 0.2, linetype = "blank") +
+  geom_line(aes(linetype = ExceptiveType), linewidth = 1) +  
+  geom_point(aes(shape = ExceptiveType), size = 3) +  
+  scale_y_continuous(name = "Mean Reading Time (ms.)") +
+  theme_light(base_size = 20, base_family = "Helvetica") +
+  scale_colour_manual(values = cbPalette) +  
+  facet_grid(vars(ExceptivePosition), switch = "y") +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black")) +
+  scale_x_discrete(labels = c("EVERY", "NP", "ExcP", "VP", "SPILL"))
+```
+
+```{r}
+#combine plots
+pdf("charts/EXP4_ext_int_chunks_plot.pdf", width = 14, height = 14)
+ext_chunks_plot + 
+  int_chunks_plot + 
+  plot_layout(ncol = 1,
+              guides = "collect",
+              axis_titles = "collect") +
+  plot_annotation(title = "Mean Chunk Reading Times (ms.)",
+                  theme = theme(plot.title = element_text(hjust = 0.5,
+                                                          size = 30)))
+```
+
+
+## Reading Time Analysis for Exceptive Phrase
+```{r}
+#dataviz for condition - logged for better viz.
+pdf("charts/EXP4_exc_plot.pdf", width = 14, height = 14)
+exc_plot <- exp4_tidied %>%
+  ggplot(aes(x = ExceptiveType, #group by condition on x axis
+             y = EXC.RESID.LOG, #log RTs on y axis
+             fill = ExceptiveType)) + #colour by condition
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  geom_violin(trim = FALSE) + #violin, don't trim ends
+  geom_boxplot(width = 0.3, #boxplot
+               outlier.shape = NA) + #don't show outlier dots
+  scale_fill_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "ExcP Reading Times (ms.)",
+       y = "Logged Residual Reading Time (ms.)",
+       x = NULL) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        plot.title = element_text(hjust = 0.5, size = 30), #center title, title font size
+        legend.position = "bottom") + #legend at bottom
+  coord_flip() + #flip coordinates so it's horizontal
+  facet_wrap(~ExceptivePosition) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black"))
+#print chart
+exc_plot
+```
+
+### Modelling
+
+```{r, results=FALSE, message=FALSE}
+#building a buildmer model w/o covars
+exc.blmr1 <- buildmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                       (1 + ExceptiveType * ExceptivePosition | Participant) +
+                      (1 + ExceptiveType * ExceptivePosition | StimID),
+                      buildmerControl = buildmerControl(
+                        include = ~ ExceptiveType * ExceptivePosition
+                        ), #do not drop factors
+                    data = exp4_tidied)
+```
+
+```{r}
+#model summary
+summary(exc.blmr1)
+```
+
+```{r}
+#buildmer manual model
+exc.mod1 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   (1 + ExceptivePosition | Participant),
+                data = exp4_tidied)
+summary(exc.mod1) #no fx
+```
+
+```{r}
+#increase ranfx complexity - add StimID intercept
+exc.mod2 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   (1 + ExceptivePosition | Participant) +
+                   (1 | StimID),
+                data = exp4_tidied)
+summary(exc.mod2) #no fx
+```
+
+```{r}
+#compare - no diff.
+anova(exc.mod1, exc.mod2) #%>% xtable() #latex
+```
+
+```{r}
+#add ExceptivePosition slope to StimID intercept also
+exc.mod3 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   (1 + ExceptivePosition | Participant) +
+                   (1 + ExceptivePosition | StimID),
+                data = exp4_tidied)
+summary(exc.mod3) #singular fit
+```
+
+```{r}
+#build a maximal model then knock down
+exc.mod4 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   (1 + ExceptiveType * ExceptivePosition | Participant) +
+                   (1 + ExceptiveType * ExceptivePosition | StimID),
+                 data = exp4_tidied)
+summary(exc.mod4) #singular fit, convergence issue
+```
+
+```{r}
+#drop ExceptivePosition from StimID intercept
+exc.mod5 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   (1 + ExceptiveType * ExceptivePosition | Participant) +
+                   (1 + ExceptiveType | StimID),
+                 data = exp4_tidied)
+summary(exc.mod5) #singular fit
+```
+
+```{r}
+#drop ExceptiveType from Participant intercept
+exc.mod6 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   (1 + ExceptivePosition | Participant) +
+                   (1 + ExceptiveType | StimID),
+                 data = exp4_tidied)
+summary(exc.mod6) #OK, no fx
+```
+
+``` {r}
+#add covars
+exc.mod7 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   TrialN + InfoCount +
+                   (1 + ExceptivePosition | Participant) +
+                   (1 + ExceptiveType | StimID),
+                 data = exp4_tidied)
+summary(exc.mod7) #OK, position fx
+```
+
+```{r}
+#check
+check_model(exc.mod7) #OK
+```
+
+```{r}
+#check collinearity
+check_collinearity(exc.mod7) #drop cumulative count
+```
+
+```{r}
+#drop cumulative count - remodel
+exc.mod8 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   TrialN +
+                   (1 + ExceptivePosition | Participant) +
+                   (1 + ExceptiveType | StimID),
+                 data = exp4_tidied)
+summary(exc.mod8) #ok, position fx
+```
+
+```{r}
+#drop ExceptiveType from StimID - high corr
+exc.mod9 <- lmer(EXC.RESID ~ ExceptiveType * ExceptivePosition +
+                   TrialN +
+                   (1 + ExceptivePosition | Participant) +
+                   (1 | StimID),
+                 data = exp4_tidied)
+summary(exc.mod9) #ok, position fx
+```
+
+```{r}
+#compare models - covar mods better
+anova(exc.mod2, exc.mod9) #%>% xtable() #latex
+anova(exc.mod8, exc.mod9) #no diff
+```
+
+```{r}
+#model output
+mod_out(exc.mod9)
+```
+
+```{r}
+check_model(exc.mod9) #ok
+```
+
+```{r, message=FALSE}
+exc_emms9 <- emmeans(exc.mod9, 
+                         pairwise ~ ExceptiveType * ExceptivePosition, 
+                         adjust = "none")
+#print
+exc_emms9
+```
+
+```{r}
+exc_emms_pos9 <- emmeans(exc.mod9, 
+                         pairwise ~ ExceptivePosition, 
+                         adjust = "none")
+```
+
+```{r}
+exc_contrasts9 <- contrast(exc_emms_pos9,
+           adjust = "none",
+           "pairwise")
+
+exc_contrasts9 %>%
+  xtable()
+```
+
+``` {r}
+#data frame of emms for dataviz
+exc_emms_df9 <- as.data.frame(exc_emms_pos9$emmeans) %>%
+  arrange(emmean)
+```
+
+```{r, message=FALSE}
+pdf("charts/EXP4_exc_emms_ixn_plot9.pdf", width = 14, height = 14)
+exc_emms_ixn_plot9 <- ggplot(exc_emms_df9,
+                           aes(x = fct_reorder(ExceptivePosition, emmean), y = emmean,
+                               colour = ExceptivePosition)) +
+  geom_point(size = 4) + #plot EMMs
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2) + #error bars
+  scale_colour_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "ExcP EMM Reading Times Plot",
+       y = "Estimated Marginal Mean Reading Time (ms.)",
+       x = "Exceptive Position") + #set up labels/title
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  theme(plot.title = element_text(size = 30, #title font size
+                                hjust = 0.5), #center title
+      legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+      legend.position = "bottom") #legend at bottom
+#print
+exc_emms_ixn_plot9
+```
+
+```{r}
+#check that predicted RTs and actual RTs correlate well
+corr_rt <- cor(exp4_tidied$EXC.PRED, exp4_tidied$EXC.RT, use = "complete.obs")
+```
+
+```{r}
+pdf("charts/EXP4_pred_rt_corr.pdf", width = 14, height = 14)
+rts_corr <- exp4_tidied %>%
+  ggplot(aes(x = EXC.PRED, y = EXC.RT)) +
+  geom_point(alpha = 0.5) +  # Scatter plot
+  geom_smooth(method = "lm", color = "red", se = FALSE) +  # Add linear regression line
+  labs(title = "Predicted vs. Actual Reading Times",
+       x = "Predicted RT", y = "Actual RT") +  # Labels
+  theme_light(base_size = 25,
+              base_line_size = .5,
+              base_rect_size = 1,
+              base_family = "Helvetica") +
+  theme(plot.title = element_text(size = 30, hjust = 0.5)) +  # Title customization
+  # Add the correlation text to the plot
+  annotate("text", x = max(exp4_tidied$EXC.PRED), y = max(exp4_tidied$EXC.RT), 
+           label = paste("r =", round(corr_rt, 2)), 
+           hjust = 1, vjust = 1, size = 6, color = "black")
+rts_corr
+```
+
+```{r}
+exc.mod10 <- lmer(EXC.RT ~ ExceptiveType * ExceptivePosition +
+                   TrialN +
+                   (1 + ExceptivePosition | Participant) +
+                   (1 | StimID),
+                 data = exp4_tidied)
+summary(exc.mod10) #ok, ExceptiveType effect
+```
+
+```{r}
+check_model(exc.mod10) #ok
+
+```
+
+```{r, message=FALSE}
+exc_emms10 <- emmeans(exc.mod10, 
+                         pairwise ~ ExceptiveType * ExceptivePosition, 
+                         adjust = "none") #just to see what's happening
+#print
+exc_emms10
+```
+
+```{r}
+exc_emms_type10 <- emmeans(exc.mod10, 
+                         pairwise ~ ExceptiveType, 
+                         adjust = "none")
+```
+
+```{r}
+exc_contrasts10 <- contrast(exc_emms_type10,
+           adjust = "none",
+           "pairwise")
+
+exc_contrasts10 %>%
+  xtable()
+```
+
+``` {r}
+#data frame of emms for dataviz
+exc_emms_df10 <- as.data.frame(exc_emms_type10$emmeans) %>%
+  arrange(emmean)
+```
+
+```{r, message=FALSE}
+pdf("charts/EXP4_exc_emms_ixn_plot10.pdf", width = 14, height = 14)
+exc_emms_ixn_plot10 <- ggplot(exc_emms_df10,
+                           aes(x = fct_reorder(ExceptiveType, emmean), y = emmean,
+                               colour = ExceptiveType)) +
+  geom_point(size = 4) + #plot EMMs
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2) + #error bars
+  scale_colour_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "ExcP EMM Reading Times Plot",
+       y = "Estimated Marginal Mean Reading Time (ms.)",
+       x = "Exceptive Type") + #set up labels/title
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  theme(plot.title = element_text(size = 30, #title font size
+                                hjust = 0.5), #center title
+      legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+      legend.position = "bottom") #legend at bottom
+#print
+exc_emms_ixn_plot10
+```
+
+## Reading Time Analysis for Verb Phrase
+
+### Summary stats and dataviz
+
+```{r}
+#dataviz for condition - logged for better viz.
+pdf("charts/EXP4_vp_plot.pdf", height = 14, width = 14)
+vp_viz <- exp4_tidied %>%
+  ggplot(aes(x = ExceptiveType, #group by condition on x axis
+             y = VP.RESID.LOG, #log RTs on y axis
+             fill = ExceptivePosition)) + #colour by condition
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  geom_violin(trim = FALSE) + #violin, don't trim ends
+  geom_boxplot(width = 0.3, #boxplot
+               outlier.shape = NA) + #don't show outlier dots
+  scale_fill_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "VP Reading Times (ms.)",
+       y = "Logged Reading Time (ms.)",
+       x = NULL) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        plot.title = element_text(hjust = 0.5, size = 30), #center title, title font size
+        legend.position = "bottom") + #legend at bottom
+  coord_flip() + #flip coordinates so it's horizontal
+  facet_wrap(~ExceptivePosition) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black"))
+#print chart
+vp_viz
+```
+
+### Modelling
+
+```{r, results=FALSE, message=FALSE}
+#building a buildmer model w/o covars
+vp.blmr1 <- buildmer(VP.RESID ~ ExceptiveType * ExceptivePosition +
+                       (1 + ExceptiveType * ExceptivePosition | Participant) +
+                       (1 + ExceptiveType * ExceptivePosition | StimID),
+                     buildmerControl = buildmerControl(include = 
+                                                         ~ ExceptiveType * ExceptivePosition
+                                                       ), #inc. ixn.
+                     data = exp4_tidied)
+```
+
+```{r}
+#model summary
+summary(vp.blmr1)
+```
+
+```{r}
+#buildmer manual
+vp.mod1 <- lmer(VP.RESID ~ ExceptiveType * ExceptivePosition +
+                  (1 + ExceptivePosition | Participant),
+                data = exp4_tidied)
+summary(vp.mod1) #OK, mainx fx and ixn
+```
+
+```{r}
+#increase ranfx complexity - build maximal model then knock down
+vp.mod2 <- lmer(VP.RESID ~ ExceptiveType * ExceptivePosition +
+                  (1 + ExceptiveType * ExceptivePosition | Participant) +
+                  (1 + ExceptiveType * ExceptivePosition | StimID),
+                data = exp4_tidied)
+summary(vp.mod2) #convergence issue
+```
+
+```{r}
+#drop ExceptiveType from Participant intercept
+vp.mod3 <- lmer(VP.RESID ~ ExceptiveType * ExceptivePosition +
+                  (1 + ExceptivePosition | Participant) +
+                  (1 + ExceptiveType * ExceptivePosition | StimID),
+                data = exp4_tidied)
+summary(vp.mod3) #singular fit
+```
+
+```{r}
+#drop ExceptivePosition from StimID intercept
+vp.mod4 <- lmer(VP.RESID ~ ExceptiveType * ExceptivePosition +
+                  (1 + ExceptivePosition | Participant) +
+                  (1 + ExceptiveType | StimID),
+                data = exp4_tidied)
+summary(vp.mod4) #singular fit
+```
+
+```{r}
+#drop ExceptiveType from StimID intercept
+vp.mod5 <- lmer(VP.RESID ~ ExceptiveType * ExceptivePosition +
+                  (1 + ExceptivePosition | Participant) +
+                  (1 | StimID),
+                data = exp4_tidied)
+summary(vp.mod5) #ok, main fx, ixn
+```
+
+```{r}
+#check model
+check_model(vp.mod5) #ok
+```
+
+
+```{r}
+#add covars
+vp.mod6 <- lmer(VP.RESID ~ ExceptiveType * ExceptivePosition +
+                  TrialN +
+                  (1 + ExceptivePosition | Participant) +
+                  (1 | StimID),
+                data = exp4_tidied)
+summary(vp.mod6) #OK, main fx, ixn
+```
+
+```{r}
+check_model(vp.mod6) #ok
+```
+
+```{r}
+#compare - covar model outperforms
+anova(vp.mod5, vp.mod6) #%>% xtable()
+```
+
+
+```{r}
+#model output
+mod_out(vp.mod6)
+```
+
+```{r}
+#emms
+vp_emms <- emmeans(vp.mod6,
+        pairwise ~ ExceptiveType * ExceptivePosition, 
+        adjust = "none")
+vp_emms
+```
+
+```{r}
+vp_contrasts <- contrast(vp_emms,
+         "pairwise",
+         adjust = "tukey") #post-hoc
+
+vp_contrasts %>%
+  xtable()
+```
+
+```{r}
+#plot it
+pdf("charts/EXP4_vp_ixn_plot.pdf", height = 14, width = 14)
+vp_ixn_plot <- emmip(vp.mod6,
+                     ExceptiveType ~ ExceptivePosition,
+                     CIs = TRUE,
+                     CIarg = list(lwd = .5,
+                                  alpha = 1)) +
+  scale_colour_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "VP EMM Reading Times Interaction Plot",
+       y = "Estimated Marginal Mean Reading Time (ms.)",
+       x = "ExceptivePosition") + #set up labels/title
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  theme(plot.title = element_text(size = 30, #title font size
+                                  hjust = 0.5), #center title
+        legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        legend.position = "bottom") #legend at bottom
+#print chart
+vp_ixn_plot
+```
+
+## Look at SPILL region
+
+```{r}
+#dataviz for condition - logged for better viz.
+pdf("charts/EXP4_spill_plot.pdf", height = 14, width = 14)
+spill_viz <- exp4_tidied %>%
+  ggplot(aes(x = ExceptiveType, #group by condition on x axis
+             y = SPILL.RESID.LOG, #log RTs on y axis
+             fill = ExceptiveType)) + #colour by condition
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  geom_violin(trim = FALSE) + #violin, don't trim ends
+  geom_boxplot(width = 0.3, #boxplot
+               outlier.shape = NA) + #don't show outlier dots
+  scale_fill_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "SPILL Reading Times (ms.)",
+       y = "Logged Reading Time (ms.)",
+       x = NULL) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+        plot.title = element_text(hjust = 0.5, size = 30), #center title, title font size
+        legend.position = "bottom") + #legend at bottom
+  coord_flip() + #flip coordinates so it's horizontal
+  facet_wrap(~ExceptivePosition) +
+  theme(legend.background = element_rect(color = "black", linewidth = 1),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.background = element_rect(fill = "grey90"),
+        strip.text = element_text(colour = "black"))
+spill_viz
+```
+
+```{r}
+spill.blmr1 <- buildmer(SPILL.RESID ~ ExceptiveType * ExceptivePosition +
+                          (1 + ExceptiveType * ExceptivePosition | Participant) +
+                          (1 + ExceptiveType * ExceptivePosition | StimID),
+                        buildmerControl = buildmerControl(include = ~ExceptiveType*ExceptivePosition),
+                        data = exp4_tidied)
+```
+
+```{r}
+summary(spill.blmr1)
+```
+
+```{r}
+#manual model
+spill.mod1 <- lmer(SPILL.RESID ~ ExceptiveType * ExceptivePosition +
+                     (1 | Participant) +
+                     (1 | StimID),
+                   data = exp4_tidied)
+summary(spill.mod1) #position effect
+```
+
+```{r}
+#increase ranfx - build max model
+spill.mod2 <- lmer(SPILL.RESID ~ ExceptiveType * ExceptivePosition +
+                     (1 + ExceptiveType * ExceptivePosition | Participant) +
+                     (1 + ExceptiveType * ExceptivePosition | StimID),
+                   data = exp4_tidied)
+summary(spill.mod2) #singular fit
+```
+
+```{r}
+#knock down
+spill.mod3 <- lmer(SPILL.RESID ~ ExceptiveType * ExceptivePosition +
+                     (1 + ExceptiveType * ExceptivePosition | Participant) +
+                     (1 + ExceptiveType | StimID),
+                   data = exp4_tidied)
+summary(spill.mod3) #singular fit
+```
+
+```{r}
+#knock down
+spill.mod4 <- lmer(SPILL.RESID ~ ExceptiveType * ExceptivePosition +
+                     (1 | Participant) +
+                     (1 + ExceptiveType | StimID),
+                   data = exp4_tidied)
+summary(spill.mod4) #OK, position fx
+```
+
+```{r}
+#no diff.
+anova(spill.mod1, spill.mod4)
+```
+
+```{r}
+#add covar
+spill.mod5 <- lmer(SPILL.RESID ~ ExceptiveType * ExceptivePosition +
+                     TrialN +
+                     (1 | Participant) +
+                     (1 + ExceptiveType | StimID),
+                   data = exp4_tidied)
+summary(spill.mod5) #ok, position effect
+```
+
+```{r}
+#compare - covar mod better
+anova(spill.mod4, spill.mod5)
+```
+```{r}
+#check
+check_model(spill.mod5) #ok
+```
+
+```{r}
+#model output
+mod_out(spill.mod5)
+```
+
+```{r}
+#spill emms
+spill_emms <- emmeans(spill.mod5, pairwise ~ ExceptiveType * ExceptivePosition, 
+                      adjust = "none")
+spill_emms
+```
+
+```{r}
+spill_emms_pos <- emmeans(spill.mod5, pairwise ~ ExceptivePosition,
+                          adjust = "none")
+```
+
+```{r}
+#data frame of emms for dataviz
+spill_emms_df <- as.data.frame(spill_emms_pos$emmeans) %>%
+  arrange(emmean)
+```
+
+```{r}
+#plot it
+pdf("charts/EXP4_spill_ixn_plot.pdf", height = 14, width = 14)
+spill_ixn_plot <- ggplot(spill_emms_df,
+                           aes(x = fct_reorder(ExceptivePosition, emmean), y = emmean,
+                               colour = ExceptivePosition)) +
+  geom_point(size = 4) + #plot EMMs
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2) + #error bars
+  scale_colour_manual(values = cbPalette) + #colour blind friendly palette
+  labs(title = "SPILL EMM Reading Times Plot",
+       y = "Estimated Marginal Mean Reading Time (ms.)",
+       x = "Exceptive Position") + #set up labels/title
+  theme_light(base_size = 25, #default font size
+              base_line_size = .5, #default line weight
+              base_rect_size = 1, #default polygon border weight
+              base_family = "Helvetica") + #font family Helvetica
+  theme(plot.title = element_text(size = 30, #title font size
+                                hjust = 0.5), #center title
+      legend.background = element_rect(color = "black", linewidth = 1), #box around legend
+      legend.position = "bottom") #legend at bottom
+spill_ixn_plot
+```
+
+```{r}
+percept.lm1 <- lm(EXC.RT ~ LOOK_SEEM + TrialN,
+                  data = exp4_tidied)
+summary(percept.lm1) #nothing
+```
+
+```{r}
+percept.lm2 <- lm(VP.RT ~ LOOK_SEEM + TrialN,
+                  data = exp4_tidied)
+summary(percept.lm2) #nothing
+```
+
+```{r}
+percept.lm3 <- lm(SPILL.RT ~ LOOK_SEEM + TrialN,
+                  data = exp4_tidied)
+summary(percept.lm3) #nothing
+```
