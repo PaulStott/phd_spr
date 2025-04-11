@@ -349,7 +349,7 @@ check_model(pp.mod8) #ok
 ```
 
 ```{r}
-anova(pp.mod2, pp.mod8) #covar model better (ignore p-val)
+anova(pp.mod2, pp.mod8) %>% xtable() #covar model better (ignore p-val)
 ```
 
 ```{r}
@@ -766,6 +766,38 @@ ext_chunks_plot_adj +
                                                           size = 30)))
 ```
 
+## COMPQs
+
+### Accuracy
+
+```{r}
+#binomial model
+compacc.blmr1 <- buildmer(CompAcc ~ RestrictorType * RestrictorPosition +
+                            TrialN +
+                            (1 +  RestrictorType * RestrictorPosition | Participant) +
+                            (1 +  RestrictorType * RestrictorPosition | StimID),
+                          family = "binomial",
+                          data = exp2_tidied)
+```
+
+```{r}
+summary(compacc.blmr1) #no fx
+```
+
+### Response Time
+
+```{r}
+comprt.blmr1 <- buildmer(CompRT ~ RestrictorType * RestrictorPosition +
+                           TrialN +
+                           (1 +  RestrictorType * RestrictorPosition | Participant) +
+                           (1 +  RestrictorType * RestrictorPosition | StimID),
+                         data = exp2_tidied)
+```
+
+```{r}
+summary(comprt.blmr1) #got faster over trials; no other fx
+```
+
 ## Post-hoc check for LOOKED vs. SEEMED
 
 ```{r}
@@ -773,11 +805,13 @@ percept.lm1 <- lm(PP.RESID ~ LOOK_SEEM + TrialN,
                   data = exp2_tidied)
 summary(percept.lm1) #nothing
 ```
+
 ```{r}
 percept.lm2 <- lm(VP.RESID ~ LOOK_SEEM + TrialN,
                   data = exp2_tidied)
 summary(percept.lm2) #nothing
 ```
+
 ```{r}
 percept.lm3 <- lm(SPILL.RESID ~ LOOK_SEEM + TrialN,
                   data = exp2_tidied)
