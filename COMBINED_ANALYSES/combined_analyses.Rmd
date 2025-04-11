@@ -1,5 +1,5 @@
 ---
-title: "Combined Analysis"
+title: "Combined Analyses"
 output: html_document
 ---
 
@@ -48,18 +48,15 @@ sum_tbl <- function(combined_latin) {
       Mean_PP = mean(PP.RESID, na.rm = TRUE),
       SD_PP = sd(PP.RESID, na.rm = TRUE),
       Mean_VP = mean(VP.RESID, na.rm = TRUE),
-      SD_VP = sd(VP.RESID, na.rm = TRUE),
-      Mean_SPILL = mean(SPILL.RESID, na.rm = TRUE),
-      SD_SPILL = sd(SPILL.RESID, na.rm = TRUE)
+      SD_VP = sd(VP.RESID, na.rm = TRUE)
     ) %>%
     ungroup() %>%
     mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
     kable(format = "latex", booktabs = TRUE,
           col.names = c("Condition", "Mean (ms)", "SD (ms)", 
-                        "Mean (ms)", "SD (ms)", 
                         "Mean (ms)", "SD (ms)")) %>%
     kable_styling(latex_options = c("striped", "hold_position")) %>%
-    add_header_above(c(" " = 1, "PP Region" = 2, "VP Region" = 2, "SPILL Region" = 2))
+    add_header_above(c(" " = 1, "PP Region" = 2, "VP Region" = 2))
   
   cat(summary_table)
 }
@@ -300,10 +297,10 @@ pp_ltn
 
 ```{r, results=FALSE, message=FALSE}
 #building a buildmer model
-pp.ltn.blmr1 <- buildmer(PP.RESID ~ RestrictorType * RestrictorPosition + 
+pp.ltn.blmr1 <- buildmer(PP.RESID ~ RestrictorType * RestrictorPosition +
                        (1 + RestrictorType * RestrictorPosition | Participant) +
                        (1 + RestrictorType * RestrictorPosition | StimID),
-                     buildmerControl = buildmerControl(include = ~ RestrictorType * RestrictorPosition),
+                     buildmerControl = buildmerControl(include = ~RestrictorType * RestrictorPosition),
                      data = combined_latin)
 ```
 
@@ -318,7 +315,7 @@ pp.ltn1 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition +
                   (1 + RestrictorPosition | Participant) +
                   (1 | StimID),
                 data = combined_latin)
-summary(pp.ltn1) #OK, main fx
+summary(pp.ltn1) #OK, main fx, ixn
 ```
 
 ```{r}
@@ -346,7 +343,7 @@ check_model(pp.ltn1) #OK
 
 ```{r}
 #add covars
-pp.ltn4 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition +
+pp.ltn4 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition + 
                   TrialN + Experiment +
                   (1 + RestrictorPosition | Participant) +
                   (1 | StimID),
@@ -370,16 +367,16 @@ mod_out(pp.ltn4)
 
 ```{r}
 #emms
-pp.ltn_emms1 <- emmeans(pp.ltn4, ~ RestrictorType * RestrictorPosition,
+pp.ltn_emms1 <- emmeans(pp.ltn4, ~ RestrictorType | RestrictorPosition,
                    adjust = "none") #we'll adjust when doing contrasts
 ```
 
 ```{r}
 #contrasts
 pp.ltn_contrasts1 <- contrast(pp.ltn_emms1,
-                 adjust = "tukey",
-                 "pairwise", 
-                 simple = "RestrictorType")
+                              adjust = "tukey",
+                              "pairwise",
+                              simple = "RestrictorType")
 ```
 
 ```{r}
@@ -390,125 +387,10 @@ pp.ltn_contrasts1 %>%
 #in future work, I'll try and devise
 #a better paradigm to mitigate against this
 ```
-
-#### TrialN-Mediated Interaction?
-
-```{r}
-#exp3 showed an ixn mediated by TrialN, so let's look at that
-pp_ltn_int_trials <- combined_latin %>%
-  filter(RestrictorPosition == "INT") %>%
-  ggplot(aes(x = TrialN, y = PP.RESID, color = RestrictorType, linetype = RestrictorType)) +
-  geom_smooth(method = "lm", se = TRUE, alpha = 0.1) +
-  labs(x = NULL, y = "Reading Time") +
-  theme_light(base_size = 25) +
-  theme(plot.title = element_text(size = 30, hjust = 0.5),
-        legend.background = element_rect(color = "black", linewidth = 1),
-        legend.position = "bottom") +
-  facet_grid(RestrictorPosition~Experiment) +
-  scale_colour_manual(values = cbPalette)
-
-pp_ltn_ext_trials <- combined_latin %>%
-  filter(RestrictorPosition == "EXT") %>%
-  ggplot(aes(x = TrialN, y = PP.RESID, color = RestrictorType, linetype = RestrictorType)) +
-  geom_smooth(method = "lm", se = TRUE, alpha = 0.1) +
-  labs(x = "Trial Number", y = "Reading Time") +
-  theme_light(base_size = 25) +
-  theme(plot.title = element_text(size = 30, hjust = 0.5),
-        legend.background = element_rect(color = "black", linewidth = 1),
-        legend.position = "bottom") +
-  facet_grid(RestrictorPosition~Experiment) +
-  scale_colour_manual(values = cbPalette)
-```
-
-```{r}
-#combine plots - looks like different adaptation profiles across experiments
-pdf("charts/COMB_LATIN_trials_plot.pdf", width = 14, height = 14)
-pp_ltn_int_trials + 
-  pp_ltn_ext_trials + 
-  plot_layout(ncol = 1,
-              guides = "collect",
-              axis_titles = "collect") +
-  plot_annotation(title = "PP Reading Times (ms.) by Trial x Condition",
-                  theme = theme(plot.title = element_text(hjust = 0.5,
-                                                          size = 30),
-                                legend.background = element_rect(color = "black", linewidth = 1),
-                                legend.position = "bottom"))
-```
-
-```{r}
-#model
-pp.ltn5 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition * scale(TrialN) + 
-                  Experiment +
-                  (1 + RestrictorPosition | Participant) +
-                  (1 | StimID),
-                data = combined_latin)
-summary(pp.ltn5) #ok, main fx, ixn
-```
-
-```{r}
-#check
-check_model(pp.ltn5) #ok
-```
-
-```{r}
-#mod out
-mod_out(pp.ltn5)
-```
-
-```{r}
-#generate sequence of trials
-trial_seq <- seq(min(combined_latin$TrialN), max(combined_latin$TrialN), length.out = 100)
-
-#predict RTs for levels of TrialN given ixn
-predicted_data <- emmeans(pp.ltn5, ~ RestrictorType * RestrictorPosition * scale(TrialN), 
-                          at = list(TrialN = trial_seq), type = "response")
-
-#convert to df for dataviz
-pred_df <- as.data.frame(predicted_data)
-```
-
-```{r}
-#plot the predicted RTs over trials - adaptation rate is different; EXT-OTH and INT-OTH get easier, though at different rates
-pdf("charts/COMB_LATIN_trials_preds_plot.pdf", width = 14, height = 14)
-ltn_trials_preds <- pred_df %>%
-  ggplot(aes(x = TrialN, y = emmean, color = RestrictorType, linetype = RestrictorType)) +
-  geom_line(linewidth = 1.2) +
-  geom_ribbon(aes(ymin = emmean - SE, ymax = emmean + SE, fill = RestrictorType), alpha = 0.2) +
-  scale_colour_manual(values = cbPalette) +
-  scale_fill_manual(values = cbPalette) +
-  labs(x = "TrialN", y = "Reading Time") +
-  facet_grid(~RestrictorPosition) +
-  theme_light(base_size = 25) +
-  theme(plot.title = element_text(size = 30, hjust = 0.5),
-        legend.background = element_rect(color = "black", linewidth = 1),
-        legend.position = "bottom")
-ltn_trials_preds
-```
-
-```{r}
-#emms
-pp.ltn_emms2 <- emmeans(pp.ltn5, ~ RestrictorType * RestrictorPosition,
-                   adjust = "none") #we'll adjust when doing contrasts
-```
-
-```{r}
-#contrasts
-pp.ltn_contrasts2 <- contrast(pp.ltn_emms2,
-                 adjust = "tukey",
-                 "pairwise", 
-                 simple = "RestrictorType")
-```
-
-```{r}
-#print latex table
-pp.ltn_contrasts2 %>%
-  xtable()
-```
-
 ```{r}
 #plot it
 pdf("charts/COMB_LATIN_emms_ixn_plot.pdf", width = 14, height = 14)
-ltn_pp_ixn_plot <- emmip(pp.ltn5, 
+ltn_pp_ixn_plot <- emmip(pp.ltn4, 
                             RestrictorType ~ RestrictorPosition,
                            CIs = TRUE,
                            CIarg = list(lwd = .5,
@@ -526,75 +408,6 @@ ltn_pp_ixn_plot <- emmip(pp.ltn5,
       legend.background = element_rect(color = "black", linewidth = 1), #box around legend
       legend.position = "bottom") #legend at bottom
 ltn_pp_ixn_plot
-```
-
-### Could there be priming effects?
-
-```{r}
-#add cumulative reading time
-combined_latin <- combined_latin %>%
-  mutate(CumulativeRT = case_when(RestrictorPosition == "INT" ~ C1.RT + C2.RT,
-                                  RestrictorPosition == "EXT" ~ C1.RT + C2.RT + C3.RT)) %>%
-  mutate(CumulativeRT = scale(CumulativeRT))
-```
-
-```{r}
-ltn_cumulative_plot_int <- combined_latin %>%
-  filter(RestrictorPosition == "INT") %>%
-  ggplot(aes(x = CumulativeRT, y = PP.RESID, color = RestrictorType, linetype = RestrictorType)) +
-  geom_smooth(method = "gam", se = TRUE, alpha = 0.1) + #gam smoothing b/c it takes into account non-linear trends
-  labs(x = "Cumulative Reading Time", y = "PP Reading Time") +
-  theme_light(base_size = 25) +
-  facet_wrap(~RestrictorPosition, switch = "y") +
-  theme(plot.title = element_text(size = 30, hjust = 0.5),
-        legend.background = element_rect(color = "black", linewidth = 1),
-        legend.position = "bottom") +
-  scale_colour_manual(values = cbPalette)
-```
-
-```{r}
-ltn_cumulative_plot_ext <- combined_latin %>%
-  filter(RestrictorPosition == "EXT") %>%
-  ggplot(aes(x = CumulativeRT, y = PP.RESID, color = RestrictorType, linetype = RestrictorType)) +
-  geom_smooth(method = "gam", se = TRUE, alpha = 0.1) + #gam smoothing b/c it takes into account non-linear trends
-  labs(x = "Cumulative Reading Time", y = "PP Reading Time") +
-  theme_light(base_size = 25) +
-  facet_wrap(~RestrictorPosition, switch = "y") +
-  theme(plot.title = element_text(size = 30, hjust = 0.5),
-        legend.background = element_rect(color = "black", linewidth = 1),
-        legend.position = "bottom") +
-  scale_colour_manual(values = cbPalette)
-```
-
-
-```{r}
-#combine plots - looks like different adaptation profiles across experiments
-pdf("charts/COMB_LATIN_cumulativeRT_effect.pdf", width = 14, height = 14)
-ltn_cumulative_plot_int + 
-  ltn_cumulative_plot_ext + 
-  plot_layout(ncol = 1,
-              guides = "collect",
-              axis_titles = "collect") +
-  plot_annotation(title = "Effect of Cumulative Reading Time on PP Reading Time",
-                  theme = theme(plot.title = element_text(hjust = 0.5,
-                                                          size = 30),
-                                legend.background = element_rect(color = "black", linewidth = 1),
-                                legend.position = "bottom")) #can only be taken tentatively, but effect reduces in INT-OTH condition
-```
-
-
-```{r}
-#model
-pp.ltn6 <- lmer(PP.RESID ~ RestrictorType * RestrictorPosition * TrialN * CumulativeRT + 
-                  Experiment +
-                  (1 + RestrictorPosition | Participant) +
-                  (1 | StimID),
-                data = combined_latin)
-summary(pp.ltn6) #ok, main fx, ixn
-```
-
-```{r}
-mod_out(pp.ltn6)
 ```
 
 ## Reading Time Analysis for Verb Phrase
@@ -673,8 +486,8 @@ summary(vp.ltn3) #singular fit
 
 ```{r}
 #add covars
-vp.ltn4 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition +
-                  TrialN +
+vp.ltn4 <- lmer(VP.RESID ~ RestrictorType * RestrictorPosition + scale(PP.RT) +
+                  TrialN + Experiment +
                   (1 + RestrictorPosition | Participant) +
                   (1 | StimID),
                 data = combined_latin)
@@ -747,116 +560,78 @@ vp_ixn_plot <- emmip(vp.ltn4,
 vp_ixn_plot
 ```
 
-## Dataviz Showing Adjusted Means For ROIs
+### Could there be priming effects?
 
 ```{r}
-#extract emms
-vp_tbl <- tibble(as.data.frame(vp.ltn_emms1))
-pp_tbl <- tibble(as.data.frame(pp.ltn_emms2))
+#add cumulative reading time
+combined_latin_prime <- combined_latin %>%
+  filter(Experiment == "EXP3") %>%
+  group_by(Participant, TrialN) %>%
+  mutate(CumulativeRT = case_when(RestrictorPosition == "INT" ~ sum(C1.RT, C2.RT), #every + N
+                                  RestrictorPosition == "EXT" ~ sum(C1.RT, C2.RT, C3.RT))) %>% #every + N + PP
+  mutate(RestrictorType = factor(RestrictorType)) #refactorise - now just two levels
 ```
 
 ```{r}
-#dataviz showing raw mean RTs for quant and N regions
-#and EMMs for PP, VP and SPILL regions
-
-#list all emm_list objects
-all_latin_emms <- list(
-  pp_tbl %>% #PP emms from modelling
-    mutate(Chunk = case_when(RestrictorPosition == "INT" ~ "C3.RT.RESID",
-                             RestrictorPosition == "EXT" ~ "C4.RT.RESID")),
-  vp_tbl %>% #VP emms from modelling
-    mutate(Chunk = case_when(RestrictorPosition == "INT" ~ "C4.RT.RESID",
-                             RestrictorPosition == "EXT" ~ "C3.RT.RESID"))) %>%
-  map_dfr(as_tibble) %>% #create tibble from list
-  rename(mean_RT = emmean, #match names of mean and SE in chunks_data
-         se_RT = SE) %>%
-  mutate(Condition = str_c(RestrictorPosition, "-", RestrictorType)) %>% #add Condition column
-  mutate(mean_Type = "EMM") #add mean_Type column for reference
-  
-  
-#extract raw means for quant and noun from chunks_data
-raw_latin_means <- chunks_latin %>% 
-  filter(Chunk %in% c("C1.RT.RESID", "C2.RT.RESID", "SPILL.RT.RESID")) %>% #filter chunks of interest
-  mutate(mean_Type = "RAW") #add mean_Type column for reference
-
-#bind to produce tibble
-chunks_latin_adj <- bind_rows(raw_latin_means, all_latin_emms) %>%
-  mutate(ChunkLabel = case_when(
-    RestrictorPosition == "EXT" & Chunk == "C1.RT.RESID" ~ "EVERY",
-    RestrictorPosition == "EXT" & Chunk == "C2.RT.RESID" ~ "NP",
-    RestrictorPosition == "EXT" & Chunk == "C3.RT.RESID" ~ "VP",
-    RestrictorPosition == "EXT" & Chunk == "C4.RT.RESID" ~ "PP",
-    RestrictorPosition == "EXT" & Chunk == "SPILL.RT.RESID" ~ "SPILL",
-    RestrictorPosition == "INT" & Chunk == "C1.RT.RESID" ~ "EVERY",
-    RestrictorPosition == "INT" & Chunk == "C2.RT.RESID" ~ "NP",
-    RestrictorPosition == "INT" & Chunk == "C3.RT.RESID" ~ "PP",
-    RestrictorPosition == "INT" & Chunk == "C4.RT.RESID" ~ "VP",
-    Chunk == "SPILL.RT.RESID" ~ "SPILL",
-    TRUE ~ Chunk  # Default case, if no specific condition
-  ))
-
+#apply contrasts
+contrasts(combined_latin_prime$RestrictorType) <- matrix(c(.5, -.5))
 ```
 
 ```{r}
-#plots
-ext_ltn_adj <- chunks_latin_adj %>%
-  mutate(RestrictorPosition = replace_na(RestrictorPosition, "EXT")) %>%
-  filter(RestrictorPosition == "EXT") %>%
-  ggplot(aes(x = Chunk, y = mean_RT, group = RestrictorType, color = RestrictorType)) +
-  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = RestrictorType), 
-              fill = "grey", alpha = 0.2, linetype = "blank") +
-  geom_line(aes(linetype = RestrictorType), linewidth = 1) +  
-  geom_point(aes(shape = RestrictorType), size = 3) +  
-  scale_y_continuous(name = "Mean Reading Time (ms.)") +
-  theme_light(base_size = 20, base_family = "Helvetica") +
-  scale_colour_manual(values = cbPalette) +  
-  facet_grid(vars(RestrictorPosition), switch = "y") +
-  theme(legend.background = element_rect(color = "black", linewidth = 1),
-        plot.title = element_text(hjust = 0.5, size = 25),
-        strip.background = element_rect(fill = "grey90"),
-        strip.text = element_text(colour = "black")) +
-  scale_x_discrete(labels = c("EVERY", "NP", "VP", "PP", "SPILL"))
-
-int_ltn_adj <- chunks_latin_adj %>%
-  mutate(RestrictorPosition = replace_na(RestrictorPosition, "INT")) %>%
-  filter(RestrictorPosition == "INT") %>%
-  ggplot(aes(x = Chunk, y = mean_RT, group = RestrictorType, color = RestrictorType)) +
-  geom_ribbon(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT, group = RestrictorType), 
-              fill = "grey", alpha = 0.2, linetype = "blank") +
-  geom_line(aes(linetype = RestrictorType), linewidth = 1) +  
-  geom_point(aes(shape = RestrictorType), size = 3) +  
-  scale_y_continuous(name = "Mean Reading Time (ms.)") +
-  theme_light(base_size = 20, base_family = "Helvetica") +
-  scale_colour_manual(values = cbPalette) +  
-  facet_grid(vars(RestrictorPosition), switch = "y") +
-  theme(legend.background = element_rect(color = "black", linewidth = 1),
-        plot.title = element_text(hjust = 0.5, size = 25),
-        strip.background = element_rect(fill = "grey90"),
-        strip.text = element_text(colour = "black")) +
-  scale_x_discrete(labels = c("EVERY", "NP", "PP", "VP", "SPILL"))
+pdf("charts/COMB_LATIN_cumulativeRT_effect.pdf", width = 14, height = 14)
+ltn_cumulative_plot_int <- combined_latin_prime %>%
+  ggplot(aes(x = log(CumulativeRT), y = PP.RESID, color = RestrictorType, linetype = RestrictorType)) +
+  geom_smooth(method = "loess", alpha = 0.1) +
+  labs(x = "Cumulative Reading Time", y = "PP Reading Time") +
+  theme_light(base_size = 25) +
+  facet_wrap(~RestrictorPosition, switch = "y") +
+  theme(plot.title = element_text(size = 30, hjust = 0.5),
+        legend.background = element_rect(color = "black", linewidth = 1),
+        legend.position = "bottom") +
+  scale_colour_manual(values = cbPalette)
+ltn_cumulative_plot_int
 ```
 
 ```{r}
-#combine plots
-pdf("charts/COMB_LATIN_chunks_adj_plot.pdf", width = 14, height = 14)
-ext_ltn_adj + 
-  int_ltn_adj + 
-  plot_layout(ncol = 1,
-              guides = "collect",
-              axis_titles = "collect") +
-  plot_annotation(title = "Adjusted Reading Times (ms.)",
-                  theme = theme(plot.title = element_text(hjust = 0.5,
-                                                          size = 30)))
+#model
+int.prime.blmr1 <- buildmer(PP.RESID ~ log(CumulativeRT) * RestrictorType * RestrictorPosition +
+                               TrialN +
+                               (1 + CumulativeRT * RestrictorType * RestrictorPosition| Participant) +
+                               (1 + CumulativeRT * RestrictorType * RestrictorPosition | StimID),
+                       data = combined_latin_prime)
+summary(int.prime.blmr1)
 ```
 
-## Quick check on LOOKED vs. SEEMED
+```{r}
+#model
+int.prime.mod1 <- lmer(PP.RESID ~ log(CumulativeRT) * RestrictorType * RestrictorPosition +
+                               TrialN +
+                               (1 + RestrictorPosition| Participant),
+                       data = combined_latin_prime)
+summary(int.prime.mod1)
+```
 
 ```{r}
-percept.ltn1 <- lm(PP.RESID ~ LOOK_SEEM, data = combined_latin)
-summary(percept.ltn1) #nothing
+mod_out(int.prime.mod1)
+```
 
-percept.ltn2 <- lm(VP.RESID ~ LOOK_SEEM, data = combined_latin)
-summary(percept.ltn2) #nothing
+```{r}
+combined_latin_prime$PredictedSlope <- predict(int.prime.mod1)
+```
+
+```{r}
+pdf("charts/COMB_LATIN_cumulativeRT_predicted_effect.pdf", width = 14, height = 14)
+combined_latin_prime_predicted_effect <- combined_latin_prime %>%
+  ggplot(aes(x = CumulativeRT, y = PredictedSlope, color = RestrictorType, linetype = RestrictorType)) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.1) +
+  labs(x = "Cumulative Reading Time", y = "PP Reading Time") +
+  theme_light(base_size = 25) +
+  facet_wrap(~RestrictorPosition) +
+  theme(plot.title = element_text(size = 30, hjust = 0.5),
+        legend.background = element_rect(color = "black", linewidth = 1),
+        legend.position = "bottom") +
+  scale_colour_manual(values = cbPalette)
+combined_latin_prime_predicted_effect
 ```
 
 # EXP1/2 INT-SUB vs. INT-MAX
@@ -870,6 +645,7 @@ exp1_tidied <- read_csv("exp1_tidied.csv") %>%
   filter(Condition != "NIL") %>%
   mutate(has_comp = as.character(has_comp))
 ```
+
 ```{r}
 exp2_COPY_tidied <- exp2_tidied %>%
   mutate(has_comp = as.character(has_comp)) %>% #change has_comp to dbl
@@ -901,7 +677,6 @@ combined_int %>%
 combined_int <- combined_int %>%
   mutate(Condition = RestrictorType)
 ```
-
 
 ```{r}
 #add Total Sentence Reading time raw and predicted
@@ -951,43 +726,23 @@ combined_int_chunks_plot <- chunks_int %>%
 combined_int_chunks_plot
 ```
 
-```{r}
-#output summary stats exp1
-combined_int %>%
-  filter(Experiment == "EXP1") %>%
-  sum_tbl()
-```
-
-```{r}
-#output summary stats exp2
-combined_int %>%
-  filter(Experiment == "EXP2") %>%
-  sum_tbl()
-```
-
-Look at whether reading times on the whole are slower in Exp1, suggesting an experiment-specific reading strategy. Look at: total sentence reading time, PP reading time. Also look at quantifying effect sizes if poss just to see if Exp1 effects were `real`.
-
-Also look at whether predicted reading times are on the whole slower, because those predicted reading times were independent of the experimental trials -- they came from filler data. If both actual reading times and predicted reading times are slower in Exp1 compared to Exp2, that would suggest that participants in Exp1 were simply being much more conscientious/attentive readers, meaning that when the PP was presented, they were more aware of the interpretation that it would give rise to.
-
-REMEMBER: look at first vs last XX% of trials. If you get the same effects in early trials in both Exp1 and Exp2, then it's not just the comprehension questions -- the effects arose due to the design of the experiment; e.g., because participants learned NOT to commit early in Exp2 and to wait to see if they got any more info later.
-
-There are then two plausible interpretations for the differences. First, maybe Exp1's early findings actually **DO** suggest that participants were committing early. Second, maybe Exp1's findings indicate instead that there are expectations about likely restrictions, and once people are reading for comprehension they are more aware of the range of possibilities and aware of their preference for how the QNP `should' be restricted. Further work will need to manipulate the proportion of comprehension questions to determine whether that has a reliable influence on the effects. If the default is to commit early, reducing the proportion of comprehension questions should mean that early effects diminish as a function of the reduction. Given the findings from Experiment Four, I think Experiment One's findings can at least tentatively be interpreted as indicating expectation or anticipation. It would be too premature to claim that enforcing deeper comprehension FORCES commitment at an earlier stage in processing. The VP has been hypothesised to be a processing domain for scope processing, for instance. And these people find evidence for delayed aspectual processing: https://pubmed.ncbi.nlm.nih.gov/32672991/. See here for The Minimal Semantic Commitment Hypothesis: https://www.sciencedirect.com/science/article/abs/pii/S0010027799000025. See also: https://www.sciencedirect.com/science/article/abs/pii/0749596X90900717. Maybe of interest: http://act-r.psy.cmu.edu/wordpress/wp-content/uploads/2012/12/399sdarticle-11.pdf. On delay, look at Beck and Tiemann paper again (`englightened incrementality'). Arregui showed that quantifiers `look for' their restrictor and scope arguments. So expectation/anticipation effects are not totally unbelievable. Also look at:
-
-https://www.semanticscholar.org/paper/Parameters-in-the-theory-of-sentence-processing%3A-Weinberg/1bd8a41ead3bae02b69be1b509edd9c9792b805e
-
-https://philarchive.org/archive/VICSM
-
-https://semanticsarchive.net/Archive/Tc2M2ZlM/The%20Logicality%20of%20language%20and%20Contextualism%20vs.%20Semantic%20Minimalism%20final%20for%20Mind%20-%20Guillermo%20Del%20Pinal.pdf
-
-https://www.nature.com/articles/s41599-023-01701-2
-
 ## Look at Total Sentence Reading Time
+
+```{r}
+combined_int %>%
+  group_by(Experiment) %>%
+  summarise("Mean Raw Reading Time" = mean(TotalTime),
+            "SD Raw Reading Time" = sd(TotalTime),
+            "Mean Predicted Reading Time" = mean(TotalPRED),
+            "SD Predicted Reading Time" = sd(TotalPRED)) %>%
+  xtable()
+```
 
 ```{r}
 #look at TotalTime over trials in each experiment
 pdf("charts/COMB_INT_trials_plot.pdf", width = 14, height = 14)
 int_trials_plot <- ggplot(combined_int, aes(x = TrialN, y = TotalTime, color = Experiment)) +
-  geom_smooth(method = "loess", alpha = .1) +
+  geom_smooth(method = "gam", alpha = .1) +
   labs(title = "Raw Sentence Reading Times Over Trials",
        y = "Reading Time (ms.)",
        x = "Trial Number") + #set up labels/title
@@ -1007,7 +762,7 @@ int_trials_plot
 #look at predicted TotalTime over trials in each experiment
 pdf("charts/COMB_INT_trials_pred_plot.pdf", width = 14, height = 14)
 int_trials_pred_plot <- ggplot(combined_int, aes(x = TrialN, y = TotalPRED, color = Experiment)) +
-  geom_smooth(method = "loess", alpha = .1) +
+  geom_smooth(method = "lm", alpha = .1) +
   labs(title = "Predicted Sentence Reading Times Over Trials",
        y = "Reading Time (ms.)",
        x = "Trial Number") + #set up labels/title
@@ -1023,7 +778,65 @@ int_trials_pred_plot <- ggplot(combined_int, aes(x = TrialN, y = TotalPRED, colo
 int_trials_pred_plot
 ```
 
+```{r}
+#factorise
+combined_int <- combined_int %>%
+  mutate(Participant = Participant) %>%
+  mutate(RestrictorType = factor(RestrictorType, levels = c("SUB", "MAX")),
+         Participant = factor(Participant),
+         StimID = factor(StimID))
+```
+
+```{r}
+#factorise experiment
+combined_int <- combined_int %>%
+  mutate(Experiment = factor(Experiment))
+```
+
+```{r}
+#contrast code
+contrasts(combined_int$RestrictorType) <- matrix(c(.5, -.5))
+contrasts(combined_int$Experiment) <- matrix(c(.5, -.5))
+```
+
+```{r}
+#model
+TotalTime.mod1 <- lmer(TotalTime ~ Experiment * scale(TotalPRED) + scale(TrialN) +
+                             (1 | Participant),
+                           data = combined_int)
+summary(TotalTime.mod1)
+```
+
+```{r}
+mod_out(TotalTime.mod1)
+```
+
+```{r}
+combined_int$Predicted <- predict(TotalTime.mod1)
+```
+
 ## Look at whether you get early PP effects on early trials in EXP2 that are similar to those in EXP1
+
+```{r}
+#separate trials into blocks
+combined_int <- combined_int %>%
+  mutate(TrialBlock = cut(TrialN, breaks = c(0, 40, 80, 120), labels = c("EARLY", "MIDDLE", "LATE"))) %>%
+  mutate(TrialBlock = factor(TrialBlock))
+```
+
+```{r}
+#contrast code
+contrasts(combined_int$TrialBlock) <- contr.sum(3)
+```
+
+```{r}
+combined_int %>%
+  group_by(Experiment, TrialBlock, RestrictorType) %>%
+  summarise("Mean Reading Time" = mean(PP.RESID),
+                             "SD Reading Time" = sd(PP.RESID)) %>%
+  xtable()
+```
+
 
 ```{r}
 #look at PP Reading Times over trials in each experiment
@@ -1047,30 +860,6 @@ int_pp_trials_plot
 ```
 
 ```{r}
-#separate trials into blocks
-combined_int <- combined_int %>%
-  mutate(TrialBlock = cut(TrialN, breaks = c(0, 40, 80, 120), labels = c("EARLY", "MIDDLE", "LATE")))
-```
-
-```{r}
-#factorise
-combined_int <- combined_int %>%
-  mutate(Participant = Participant) %>%
-  mutate(RestrictorType = factor(RestrictorType, levels = c("SUB", "MAX")),
-         Participant = factor(Participant),
-         StimID = factor(StimID),
-         Experiment = factor(Experiment),
-         factor(TrialBlock))
-```
-
-```{r}
-#contrast code
-contrasts(combined_int$RestrictorType) <- matrix(c(.5, -.5))
-contrasts(combined_int$TrialBlock) <- contr.sum(3)
-contrasts(combined_int$Experiment) <- matrix(c(.5, -.5))
-```
-
-```{r}
 chunks_int_BLOCKS <- combined_int %>%
   pivot_longer(cols = all_of(roi_int), 
                names_to = "Chunk", 
@@ -1083,7 +872,6 @@ chunks_int_BLOCKS <- combined_int %>%
     .groups = "drop"
   )
 ```
-
 
 ```{r}
 #plots
@@ -1125,7 +913,7 @@ mod_out(pp.int.mod1)
 ```
 
 ```{r}
-int_blocks_emms <- emmeans(pp.int.mod1, ~ RestrictorType * TrialBlock | Experiment)
+int_blocks_emms <- emmeans(pp.int.mod1, ~ Experiment * TrialBlock * RestrictorType)
 int_blocks_contrasts <- contrast(int_blocks_emms, interaction = "pairwise", by = "Experiment", adjust = "sidak")
 ```
 
